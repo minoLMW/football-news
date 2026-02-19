@@ -1,0 +1,389 @@
+========================================
+축구 뉴스 RSS 수집·요약 서비스 개발 로그
+========================================
+면접용 프로젝트 설명 자료
+
+[프로젝트 개요]
+- 축구 뉴스 RSS 피드 수집 → 본문 크롤링 → Claude AI로 한국어 요약/카테고리 분류 → SQLite 저장 → Express API 제공
+- 기술 스택: Node.js, TypeScript, Express, better-sqlite3, Anthropic Claude API
+- 개발 환경: Windows 11, PowerShell
+
+========================================
+1단계: 프로젝트 뼈대 생성
+========================================
+목표: 실행 가능한 최소 골격 구성
+
+[생성된 구조]
+football-news/
+├── data/                    # SQLite DB 파일 저장 (gitignore 대상)
+├── sql/
+│   └── 001_init.sql         # 초기 DB 스키마
+├── src/
+│   ├── db/
+│   │   ├── client.ts        # DB 연결 싱글턴
+│   │   └── migrate.ts       # SQL 마이그레이션 러너
+│   └── index.ts             # Express 서버 진입점
+├── .env.example             # 환경변수 템플릿
+├── .gitignore
+├── package.json
+└── tsconfig.json
+
+[핵심 설계 결정과 이유]
+
+1. CJS(CommonJS) 선택 (ESM 대신)
+   - better-sqlite3가 네이티브 C++ addon이라 ESM 환경에서 import 충돌 가능성 있음
+   - Node.js 생태계에서 CJS가 아직 호환성이 가장 넓음
+   - tsx가 CJS/ESM 모두 지원하므로 개발 시 불편함 없음
+
+2. better-sqlite3 선택 (node-sqlite3 대신)
+   - 동기(sync) API → 코드가 직관적이고 트랜잭션 관리가 간단
+   - Node.js 단일 스레드 특성상 동기 I/O도 실무에서 충분히 빠름
+   - WAL(Write-Ahead Logging) 모드 활성화로 읽기/쓰기 동시성 확보
+
+3. 자체 마이그레이션 시스템
+   - sql/ 폴더에 NNN_*.sql 파일을 추가하면 자동 적용
+   - migrations 테이블로 이미 적용된 파일 추적 → 중복 실행 방지
+   - ORM 없이 순수 SQL로 스키마 관리 → DB 구조를 직접 제어
+
+4. articles 테이블 설계
+   - guid (UNIQUE): RSS 아이템의 고유 식별자 → 중복 수집 방지
+   - status 컬럼 (pending/summarized/failed): 파이프라인 상태 추적
+   - raw_content: 크롤링 원문 보존 → 요약 재시도 가능
+   - created_at/updated_at: 데이터 이력 추적
+
+5. tsx 사용 (ts-node 대신)
+   - Windows에서 안정적
+   - watch 모드 내장 → 파일 변경 시 자동 재시작
+   - tsconfig.json 설정과 독립적으로 동작
+
+[사용 명령어]
+npm install          # 의존성 설치
+npm run db:migrate   # DB 스키마 적용
+npm run dev          # 개발 서버 (tsx watch)
+npm run build        # TypeScript 빌드
+npm run start        # 프로덕션 실행
+
+[면접 포인트]
+- "왜 ESM 대신 CJS를 선택했나요?" → 네이티브 addon 호환성
+- "왜 ORM을 안 썼나요?" → 소규모 프로젝트에서 SQL 직접 제어가 유지보수에 유리
+- "마이그레이션을 왜 직접 만들었나요?" → 외부 의존성 최소화 + SQL 파일 기반이라 리뷰/추적 용이
+- "better-sqlite3의 동기 API가 성능 문제 없나요?" → 단일 서버, 적은 동시 요청 환경에서는 오히려 코드 복잡도를 줄여주는 장점
+
+
+========================================
+3단계: 뉴스 수집 모듈 구현
+========================================
+목표: RSS 피드 파싱 + 기사 본문 크롤링 + 실패 시 fallback
+
+[생성된 파일]
+src/rss/
+├── feeds.ts      # 피드 소스 정의 (URL, 이름, 언어)
+├── parser.ts     # RSS XML → 구조화된 RssItem 변환
+├── crawler.ts    # 본문 HTML 크롤링 + 텍스트 추출
+└── index.ts      # barrel export
+
+[핵심 설계 결정과 이유]
+
+1. rss-parser 라이브러리 선택
+   - Node.js RSS 파싱 사실상 표준 (주간 200만+ 다운로드)
+   - XML 파싱, 날짜 정규화, 다양한 피드 형식(RSS 2.0, Atom) 자동 처리
+   - 커스텀 헤더/타임아웃 지원
+
+2. cheerio로 본문 추출 (Puppeteer 대신)
+   - 경량 HTML 파서 — 브라우저 엔진 불필요
+   - 뉴스 사이트 대부분 SSR이라 JS 렌더링 필요 없음
+   - Puppeteer는 메모리 500MB+, cheerio는 수 MB → 서버 리소스 절약
+
+3. 본문 추출 전략 (우선순위 탐색)
+   - <article> → [role="main"] → .article-body → ... → <p> 태그 수집
+   - 뉴스 사이트마다 HTML 구조가 달라서 다단계 fallback 필수
+   - 불필요 요소(nav, ad, footer) 사전 제거 후 추출
+
+4. 크롤링 실패 시 RSS description fallback
+   - 네트워크 오류, 사이트 차단, JS 렌더링 사이트 등 실패 원인 다양
+   - RSS description만으로도 요약에 충분한 경우가 많음
+   - 실패해도 파이프라인이 멈추지 않는 회복력(resilience) 확보
+
+5. Promise.allSettled로 병렬 수집
+   - Promise.all은 하나 실패하면 전체 실패
+   - allSettled는 개별 실패를 허용 → 성공한 피드만 수집
+   - 피드 3개 중 1개 다운되어도 나머지 2개는 정상 처리
+
+6. AbortController로 타임아웃 관리
+   - Node.js 내장 fetch의 signal 옵션 활용
+   - 응답 없는 사이트에 무한 대기 방지 (10초 제한)
+
+[면접 포인트]
+- "왜 Puppeteer 안 쓰나요?" → SSR 뉴스 사이트에는 과잉, 메모리/속도 비용 대비 cheerio가 적합
+- "크롤링 실패하면 어떻게 되나요?" → RSS description fallback으로 파이프라인 연속성 보장
+- "Promise.all 대신 allSettled 쓴 이유?" → 부분 실패 허용 설계 (fault tolerance)
+- "본문 추출 정확도를 어떻게 높이나요?" → 다단계 selector fallback + 노이즈 요소 사전 제거
+
+
+========================================
+4단계: 요약 파이프라인 연결
+========================================
+목표: Claude API로 영문 기사 → 한국어 요약 + 카테고리 분류
+
+[생성된 파일]
+src/ai/
+├── client.ts       # Anthropic SDK 싱글턴 + 모델 티어 관리
+├── prompts.ts      # 시스템/유저 프롬프트 템플릿 + 카테고리 정의
+├── summarizer.ts   # 요약 호출 + JSON 파싱 + 배치 순차 처리
+└── index.ts        # barrel export
+
+[핵심 설계 결정과 이유]
+
+1. 모델 티어 분리 (sonnet / opus)
+   - 요약/분류는 sonnet (빠르고 저렴, 충분한 품질)
+   - 심층 분석이 필요한 경우만 opus (비용 10배+)
+   - .env로 모델 ID 관리 → 모델 업데이트 시 코드 변경 불필요
+
+2. 요약+분류를 단일 API 호출로 처리
+   - 별도 호출하면 비용 2배, 지연 2배
+   - JSON 형식 응답을 강제하여 파싱 안정성 확보
+   - 단일 호출로 context를 공유하므로 분류 정확도도 향상
+
+3. 프롬프트 엔지니어링 전략
+   - system prompt: 역할 부여 + 출력 형식 고정 + 카테고리 목록 제시
+   - user prompt: 제목+본문 분리 제공
+   - 본문 3000자 컷 → 토큰 비용 제어 (대부분의 핵심 내용은 앞부분에 있음)
+   - 선수명 한국어 표기 규칙 명시 → 일관된 한국어 요약 품질
+
+4. 카테고리 유효성 검증 + 자동 보정
+   - Claude가 목록 외 카테고리를 반환할 수 있음
+   - CATEGORIES 배열에 없으면 "기타"로 자동 보정
+   - 타입 안전성 확보 (ArticleCategory 타입)
+
+5. 순차 처리 (병렬 대신)
+   - Claude API는 분당 요청 수 제한 (rate limit) 있음
+   - 병렬 요청 시 429 에러 → 재시도 로직 필요 → 복잡도 증가
+   - 순차 + 500ms 간격이 안정적이고 예측 가능
+   - 뉴스 수집은 실시간이 아닌 배치 → 속도보다 안정성 우선
+
+6. JSON 파싱 방어 처리
+   - Claude가 ```json 코드블록으로 감쌀 수 있음 → 정규식으로 제거
+   - 파싱 실패 시 null 반환 → 해당 기사만 failed, 전체 파이프라인 계속
+   - 모든 실패는 로그로 기록 → 디버깅 가능
+
+[면접 포인트]
+- "왜 요약과 분류를 한 번에 처리하나요?" → 비용/지연 절감 + context 공유로 정확도 향상
+- "Claude 응답이 예상과 다르면?" → JSON 파싱 방어 + 카테고리 자동 보정 + null fallback
+- "왜 병렬 호출 안 하나요?" → rate limit 안정성, 배치 특성상 속도보다 신뢰성 우선
+- "모델을 왜 .env로 관리하나요?" → Anthropic 모델 업데이트 주기가 빠름, 코드 변경 없이 교체 가능
+- "본문을 왜 3000자에서 자르나요?" → 토큰 비용 제어 + 뉴스 핵심은 리드 문단에 집중
+
+
+========================================
+5단계: DB 저장 + 파이프라인 통합
+========================================
+목표: 수집→크롤링→요약→저장을 하나의 실행 단위로 연결
+
+[생성된 파일]
+src/db/repository.ts   # articles 테이블 CRUD 레이어
+src/pipeline.ts        # 전체 파이프라인 오케스트레이터
+
+[핵심 설계 결정과 이유]
+
+1. Repository 패턴 도입
+   - DB 쿼리를 한 파일에 집중 → SQL 변경 시 영향 범위 최소화
+   - 비즈니스 로직(pipeline.ts)과 데이터 접근(repository.ts) 분리
+   - ORM 없이도 깔끔한 데이터 접근 계층 구현 가능
+
+2. INSERT OR IGNORE로 중복 방지
+   - guid에 UNIQUE 제약 → 같은 기사 재수집 시 자동 무시
+   - 애플리케이션 레벨 중복 체크 대신 DB 레벨에서 보장
+   - 트랜잭션 내 일괄 삽입으로 성능 확보
+
+3. 상태 기반 파이프라인 (pending → summarized | failed)
+   - 각 기사가 독립적인 상태를 가짐
+   - 중간에 실패해도 다음 실행에서 pending만 재처리
+   - 멱등성(idempotency): 같은 파이프라인을 여러 번 돌려도 안전
+
+4. 파이프라인 3단계 구조
+   ① RSS 수집 + DB 삽입 (벌크)
+   ② pending 기사 순차 처리 (크롤링 → 요약 → 저장)
+   ③ 결과 리포트
+   - 각 단계가 독립적 → 실패 지점 식별 용이
+
+5. 기사별 try-catch로 격리
+   - 한 기사 처리 실패가 전체 파이프라인을 중단하지 않음
+   - 실패 기사는 failed 상태로 마킹 → 나중에 원인 파악 가능
+   - 성공/실패 카운트로 실행 결과 즉시 확인
+
+[사용 방법]
+npm run pipeline    # 전체 파이프라인 1회 실행
+
+[면접 포인트]
+- "파이프라인이 중간에 실패하면?" → 기사별 격리 + status 기반 재처리
+- "같은 기사가 두 번 수집되면?" → guid UNIQUE + INSERT OR IGNORE로 DB 레벨 방지
+- "왜 Repository 패턴을 쓰나요?" → SQL 변경 범위 격리 + 테스트 용이성
+- "멱등성이 뭐고 왜 중요한가요?" → 같은 입력에 같은 결과, 크론잡/재시도 안전성 보장
+
+
+========================================
+6단계: API 엔드포인트 제공
+========================================
+목표: 수집·요약된 데이터를 REST API로 외부에 노출
+
+[API 엔드포인트]
+GET /health                  → 서버 상태 + DB 연결 확인
+GET /articles                → 기사 목록 (필터링, 페이지네이션)
+  ?limit=20&offset=0         → 페이지네이션
+  ?category=이적/영입         → 카테고리 필터
+  ?status=summarized         → 상태 필터
+GET /stats                   → 전체 기사 통계 (총/대기/완료/실패)
+GET /categories              → 사용 가능한 카테고리 목록
+
+[핵심 설계 결정과 이유]
+
+1. RESTful 설계 원칙 적용
+   - 리소스 중심 URL: /articles (명사), /stats (명사)
+   - HTTP 메서드: 읽기만 있으므로 GET만 사용
+   - 쿼리 파라미터로 필터링 → URL이 깔끔하고 캐싱 가능
+
+2. 페이지네이션 (limit + offset)
+   - 대량 데이터 응답 방지 → limit 최대값 100으로 제한
+   - offset 기반이 구현 단순, SQLite LIMIT/OFFSET에 직결
+   - 응답에 count, limit, offset 포함 → 클라이언트가 다음 페이지 계산 가능
+
+3. 카테고리/상태 필터링
+   - DB 쿼리 레벨에서 WHERE 조건으로 처리 → 메모리 효율적
+   - 동적 조건 조합: category만, status만, 둘 다, 둘 다 없이 모두 가능
+
+4. /categories 엔드포인트 분리
+   - 프론트엔드에서 필터 UI를 동적으로 구성 가능
+   - 카테고리 목록 변경 시 프론트엔드 배포 불필요
+
+[사용 방법]
+npm run dev          # 개발 서버 시작
+# 브라우저에서:
+# http://localhost:3000/health
+# http://localhost:3000/articles?limit=5
+# http://localhost:3000/stats
+
+[면접 포인트]
+- "왜 GraphQL 안 쓰나요?" → 단순 읽기 API, 리소스 1개, REST가 오버헤드 최소
+- "페이지네이션 방식은?" → offset 기반, 데이터 규모가 작아서 커서 방식은 과잉
+- "인증/인가는?" → 현재 내부 서비스 용도, 필요 시 미들웨어 추가 가능
+- "응답 포맷은 왜 이 구조인가요?" → count/limit/offset 포함으로 클라이언트 자율적 페이징
+
+
+========================================
+최종 프로젝트 구조
+========================================
+
+football-news/
+├── data/                          # SQLite DB (gitignore)
+├── public/
+│   └── index.html                 # 프론트엔드 대시보드 (단일 파일)
+├── sql/
+│   └── 001_init.sql               # 초기 스키마
+├── src/
+│   ├── ai/
+│   │   ├── client.ts              # Anthropic SDK 싱글턴
+│   │   ├── prompts.ts             # 프롬프트 템플릿 + 카테고리 정의
+│   │   ├── summarizer.ts          # 요약/분류 호출 로직
+│   │   └── index.ts
+│   ├── db/
+│   │   ├── client.ts              # better-sqlite3 연결
+│   │   ├── migrate.ts             # SQL 마이그레이션 러너
+│   │   └── repository.ts          # articles CRUD
+│   ├── rss/
+│   │   ├── feeds.ts               # 피드 소스 정의
+│   │   ├── parser.ts              # RSS 파싱
+│   │   ├── crawler.ts             # 본문 크롤링
+│   │   └── index.ts
+│   ├── index.ts                   # Express API 서버 + static 서빙
+│   └── pipeline.ts                # 전체 파이프라인 오케스트레이터
+├── .env.example
+├── .gitignore
+├── dev-log.txt                    # 이 파일
+├── package.json
+└── tsconfig.json
+
+[npm scripts 정리]
+npm install          # 의존성 설치
+npm run dev          # 개발 서버 (tsx watch, 포트 3000)
+npm run build        # TypeScript → JavaScript 빌드
+npm run start        # 프로덕션 서버 (dist/index.js)
+npm run db:migrate   # DB 스키마 적용
+npm run pipeline     # RSS 수집 → 크롤링 → 요약 → DB 저장
+
+[데이터 흐름]
+RSS 피드 → parser.ts → RssItem[] → repository.ts (DB 삽입)
+                                         ↓
+                                  pending 기사 조회
+                                         ↓
+                              crawler.ts (본문 추출)
+                                         ↓
+                            summarizer.ts (Claude 요약/분류)
+                                         ↓
+                              repository.ts (결과 저장)
+                                         ↓
+                               index.ts (API로 제공)
+
+
+========================================
+7단계: 프론트엔드 대시보드 (웹 UI)
+========================================
+목표: 수집·요약된 뉴스를 브라우저에서 바로 확인할 수 있는 대시보드
+
+[생성된 파일]
+public/
+└── index.html              # 단일 파일 대시보드 (HTML + CSS + JS 인라인)
+
+[핵심 설계 결정과 이유]
+
+1. 단일 HTML 파일 (프레임워크 없이)
+   - 빌드 스텝 불필요 → Express static으로 바로 서빙
+   - 프로젝트 본질은 백엔드 파이프라인, UI는 확인용
+   - React/Vue 도입하면 의존성·빌드·번들 등 복잡도가 목적 대비 과잉
+
+2. Express.static으로 정적 파일 서빙
+   - app.use(express.static(path.resolve("public")))
+   - 별도 라우트 설정 없이 public/ 내 파일 자동 서빙
+   - localhost:3000 접속 시 index.html 자동 로드
+
+3. API 연동 (동일 오리진)
+   - 프론트와 백엔드가 같은 Express 서버에서 제공
+   - CORS 설정 불필요 → 상대 URL로 /stats, /articles, /categories 호출
+   - fetch API 사용 (외부 라이브러리 없이 브라우저 내장)
+
+4. 한국어 UI
+   - 제목: "⚽ 축구 뉴스 대시보드"
+   - 통계 카드: 전체 기사 / 요약 완료 / 대기 중 / 실패
+   - 필터: 카테고리 (서버에서 동적 로드), 상태 (요약 완료/대기 중/실패)
+   - 페이지네이션: 이전/다음 (offset 기반)
+   - 상대 시간 표시: "2시간 전", "3일 전" 등
+
+5. 디자인 시스템
+   - Google Fonts (Noto Sans KR) → 한국어 가독성 최적화
+   - CSS Grid + Flexbox → 반응형 (모바일 대응)
+   - 소스별 색상 배지: BBC=빨강, ESPN=파랑, Goal.com=검정
+   - 상태별 색상: 완료=초록, 대기=노랑, 실패=빨강
+   - 카드 호버 애니메이션 → 시각적 피드백
+
+6. 로딩/에러 상태 처리
+   - 로딩 중: 점 애니메이션 ("불러오는 중...")
+   - 데이터 없음: "표시할 기사가 없습니다."
+   - API 에러: 에러 메시지 표시
+   - 새로고침 버튼: 통계 + 기사 동시 재로드
+
+7. XSS 방어
+   - 모든 동적 데이터를 esc() 함수로 HTML 이스케이프 처리
+   - textContent → innerHTML 변환 방식으로 안전한 렌더링
+   - 외부 입력(기사 제목/요약)이 직접 DOM에 삽입되므로 필수
+
+[사용 방법]
+npm run dev              # 개발 서버 시작
+# 브라우저에서: http://localhost:3000
+
+[면접 포인트]
+- "왜 React/Vue를 안 쓰나요?" → 확인용 UI에 프레임워크는 과잉, 빌드 없이 바로 서빙 가능
+- "CORS 문제는?" → 동일 오리진 서빙이라 발생하지 않음
+- "XSS 방어는 어떻게?" → 모든 동적 데이터 HTML 이스케이프 + textContent 활용
+- "반응형은?" → CSS Grid auto-fit + 미디어 쿼리로 모바일 대응
+- "대시보드를 별도 서비스로 분리할 수도 있나요?" → 가능, API가 REST로 분리되어 있어 프론트만 독립 배포 가능
+
+

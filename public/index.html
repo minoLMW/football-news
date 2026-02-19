@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>축구 뉴스 대시보드</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Noto Sans KR', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #f0f2f5;
+  color: #1a1a2e;
+  min-height: 100vh;
+}
+
+/* ── Header ── */
+.header {
+  background: linear-gradient(135deg, #0f3443 0%, #34e89e 100%);
+  color: #fff;
+  padding: 1.5rem 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.header h1 { font-size: 1.5rem; font-weight: 700; }
+.header-actions { display: flex; gap: .5rem; align-items: center; }
+.btn {
+  border: none; border-radius: 8px; padding: .5rem 1rem;
+  font-size: .85rem; font-family: inherit; cursor: pointer;
+  font-weight: 500; transition: all .15s;
+}
+.btn-refresh { background: rgba(255,255,255,.2); color: #fff; }
+.btn-refresh:hover { background: rgba(255,255,255,.35); }
+.btn-refresh.spinning svg { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Stats ── */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1rem;
+  padding: 1.5rem 2rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+.stat-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1.2rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  text-align: center;
+  transition: transform .15s;
+}
+.stat-card:hover { transform: translateY(-2px); }
+.stat-card .number { font-size: 2rem; font-weight: 700; }
+.stat-card .label { font-size: .85rem; color: #666; margin-top: .25rem; }
+.stat-total .number { color: #0f3443; }
+.stat-done .number { color: #10b981; }
+.stat-pending .number { color: #f59e0b; }
+.stat-failed .number { color: #ef4444; }
+
+/* ── Filters ── */
+.filters {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 2rem 1rem;
+  display: flex;
+  gap: .75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.filters select {
+  padding: .5rem .75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: .85rem;
+  background: #fff;
+  cursor: pointer;
+  min-width: 140px;
+}
+.filters select:focus { outline: none; border-color: #34e89e; }
+.result-count { font-size: .85rem; color: #888; margin-left: auto; }
+
+/* ── Articles ── */
+.articles {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 2rem 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.article-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  transition: transform .15s, box-shadow .15s;
+}
+.article-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,.1);
+}
+.article-top {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin-bottom: .6rem;
+  flex-wrap: wrap;
+}
+.badge {
+  display: inline-block;
+  padding: .15rem .55rem;
+  border-radius: 6px;
+  font-size: .7rem;
+  font-weight: 700;
+  color: #fff;
+  white-space: nowrap;
+}
+.badge-bbc { background: #b80000; }
+.badge-espn { background: #0b5ed7; }
+.badge-goal { background: #1e293b; }
+.badge-other { background: #6b7280; }
+.badge-category {
+  background: #e0f2fe;
+  color: #0369a1;
+  font-weight: 500;
+}
+.badge-status {
+  font-weight: 500;
+  font-size: .65rem;
+  padding: .12rem .45rem;
+}
+.badge-summarized { background: #d1fae5; color: #065f46; }
+.badge-pending { background: #fef3c7; color: #92400e; }
+.badge-failed { background: #fee2e2; color: #991b1b; }
+
+.article-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1.4;
+  margin-bottom: .5rem;
+}
+.article-title a {
+  color: #1a1a2e;
+  text-decoration: none;
+}
+.article-title a:hover { color: #0f3443; text-decoration: underline; }
+
+.article-summary {
+  font-size: .9rem;
+  color: #444;
+  line-height: 1.6;
+  margin-bottom: .5rem;
+  word-break: keep-all;
+}
+.article-meta {
+  font-size: .75rem;
+  color: #999;
+}
+
+/* ── Pagination ── */
+.pagination {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 2rem 2rem;
+  display: flex;
+  justify-content: center;
+  gap: .5rem;
+}
+.btn-page {
+  background: #fff;
+  color: #333;
+  border: 1px solid #d1d5db;
+}
+.btn-page:hover { background: #f3f4f6; }
+.btn-page:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ── Loading / Empty ── */
+.loading {
+  text-align: center;
+  padding: 3rem;
+  color: #999;
+  font-size: .95rem;
+}
+.loading-dots::after {
+  content: '';
+  animation: dots 1.2s steps(4) infinite;
+}
+@keyframes dots {
+  0% { content: ''; }
+  25% { content: '.'; }
+  50% { content: '..'; }
+  75% { content: '...'; }
+}
+.empty-state {
+  text-align: center;
+  padding: 3rem;
+  color: #aaa;
+}
+
+/* ── Responsive ── */
+@media (max-width: 640px) {
+  .header { padding: 1rem; }
+  .header h1 { font-size: 1.2rem; }
+  .stats-grid, .filters, .articles, .pagination { padding-left: 1rem; padding-right: 1rem; }
+  .article-card { padding: 1rem; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>&#9917; 축구 뉴스 대시보드</h1>
+  <div class="header-actions">
+    <button class="btn btn-refresh" id="btnRefresh" onclick="refresh()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:4px"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0118.8-4.3M22 12.5a10 10 0 01-18.8 4.2"/></svg>
+      새로고침
+    </button>
+  </div>
+</div>
+
+<div class="stats-grid" id="statsGrid">
+  <div class="stat-card stat-total"><div class="number" id="statTotal">-</div><div class="label">전체 기사</div></div>
+  <div class="stat-card stat-done"><div class="number" id="statDone">-</div><div class="label">요약 완료</div></div>
+  <div class="stat-card stat-pending"><div class="number" id="statPending">-</div><div class="label">대기 중</div></div>
+  <div class="stat-card stat-failed"><div class="number" id="statFailed">-</div><div class="label">실패</div></div>
+</div>
+
+<div class="filters">
+  <select id="filterCategory" onchange="resetAndLoad()">
+    <option value="">전체 카테고리</option>
+  </select>
+  <select id="filterStatus" onchange="resetAndLoad()">
+    <option value="">전체 상태</option>
+    <option value="summarized">요약 완료</option>
+    <option value="pending">대기 중</option>
+    <option value="failed">실패</option>
+  </select>
+  <span class="result-count" id="resultCount"></span>
+</div>
+
+<div class="articles" id="articleList">
+  <div class="loading">불러오는 중<span class="loading-dots"></span></div>
+</div>
+
+<div class="pagination" id="pagination"></div>
+
+<script>
+const LIMIT = 20;
+let currentOffset = 0;
+let totalShown = 0;
+
+function sourceBadgeClass(source) {
+  const s = source.toLowerCase();
+  if (s.includes('bbc')) return 'badge-bbc';
+  if (s.includes('espn')) return 'badge-espn';
+  if (s.includes('goal')) return 'badge-goal';
+  return 'badge-other';
+}
+
+function statusLabel(status) {
+  return { summarized: '요약 완료', pending: '대기 중', failed: '실패' }[status] || status;
+}
+
+function timeAgo(dateStr) {
+  if (!dateStr) return '';
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const diff = Math.max(0, now - then);
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return '방금';
+  if (m < 60) return m + '분 전';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + '시간 전';
+  const d = Math.floor(h / 24);
+  if (d < 30) return d + '일 전';
+  return new Date(dateStr).toLocaleDateString('ko-KR');
+}
+
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(res.statusText);
+  return res.json();
+}
+
+async function loadStats() {
+  try {
+    const s = await fetchJSON('/stats');
+    document.getElementById('statTotal').textContent = s.total;
+    document.getElementById('statDone').textContent = s.summarized;
+    document.getElementById('statPending').textContent = s.pending;
+    document.getElementById('statFailed').textContent = s.failed;
+  } catch { /* ignore */ }
+}
+
+async function loadCategories() {
+  try {
+    const data = await fetchJSON('/categories');
+    const sel = document.getElementById('filterCategory');
+    (data.categories || []).forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c; opt.textContent = c;
+      sel.appendChild(opt);
+    });
+  } catch { /* ignore */ }
+}
+
+async function loadArticles() {
+  const list = document.getElementById('articleList');
+  list.innerHTML = '<div class="loading">불러오는 중<span class="loading-dots"></span></div>';
+
+  const cat = document.getElementById('filterCategory').value;
+  const status = document.getElementById('filterStatus').value;
+
+  let url = '/articles?limit=' + LIMIT + '&offset=' + currentOffset;
+  if (cat) url += '&category=' + encodeURIComponent(cat);
+  if (status) url += '&status=' + encodeURIComponent(status);
+
+  try {
+    const data = await fetchJSON(url);
+    totalShown = data.count;
+
+    document.getElementById('resultCount').textContent =
+      data.count > 0 ? (currentOffset + 1) + '~' + (currentOffset + data.count) + '건' : '';
+
+    if (data.data.length === 0) {
+      list.innerHTML = '<div class="empty-state">표시할 기사가 없습니다.</div>';
+      renderPagination(0);
+      return;
+    }
+
+    list.innerHTML = data.data.map(a => `
+      <div class="article-card">
+        <div class="article-top">
+          <span class="badge ${sourceBadgeClass(a.source)}">${esc(a.source)}</span>
+          ${a.category ? '<span class="badge badge-category">' + esc(a.category) + '</span>' : ''}
+          <span class="badge badge-status badge-${a.status}">${statusLabel(a.status)}</span>
+        </div>
+        <div class="article-title"><a href="${esc(a.link)}" target="_blank" rel="noopener">${esc(a.title)}</a></div>
+        ${a.summary ? '<div class="article-summary">' + esc(a.summary) + '</div>' : ''}
+        <div class="article-meta">${timeAgo(a.pub_date)}</div>
+      </div>
+    `).join('');
+
+    renderPagination(data.count);
+  } catch (err) {
+    list.innerHTML = '<div class="empty-state">데이터를 불러올 수 없습니다: ' + esc(err.message) + '</div>';
+  }
+}
+
+function renderPagination(count) {
+  const pg = document.getElementById('pagination');
+  const hasPrev = currentOffset > 0;
+  const hasNext = count >= LIMIT;
+  pg.innerHTML = `
+    <button class="btn btn-page" ${hasPrev ? '' : 'disabled'} onclick="prevPage()">&#8592; 이전</button>
+    <button class="btn btn-page" ${hasNext ? '' : 'disabled'} onclick="nextPage()">다음 &#8594;</button>
+  `;
+}
+
+function prevPage() { currentOffset = Math.max(0, currentOffset - LIMIT); loadArticles(); }
+function nextPage() { currentOffset += LIMIT; loadArticles(); }
+function resetAndLoad() { currentOffset = 0; loadArticles(); }
+
+function esc(str) {
+  if (!str) return '';
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+async function refresh() {
+  const btn = document.getElementById('btnRefresh');
+  btn.classList.add('spinning');
+  await Promise.all([loadStats(), loadArticles()]);
+  setTimeout(() => btn.classList.remove('spinning'), 600);
+}
+
+// Init
+loadStats();
+loadCategories();
+loadArticles();
+</script>
+</body>
+</html>
