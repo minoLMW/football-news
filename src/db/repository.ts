@@ -120,6 +120,33 @@ export function findPendingArticles(limit = 20): ArticleRow[] {
 }
 
 /**
+ * ID로 기사 단건 조회
+ */
+export function findArticleById(id: number): ArticleRow | null {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT * FROM articles WHERE id = ?")
+    .get(id) as ArticleRow | undefined;
+  return row || null;
+}
+
+/**
+ * 임베딩 미생성 기사 조회 (backfill용)
+ */
+export function findArticlesNeedingEmbeddings(limit = 50): ArticleRow[] {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT a.* FROM articles a
+       LEFT JOIN article_embeddings e ON a.id = e.article_id
+       WHERE a.status = 'summarized' AND e.article_id IS NULL
+       ORDER BY a.created_at ASC
+       LIMIT ?`
+    )
+    .all(limit) as ArticleRow[];
+}
+
+/**
  * 전체 기사 조회 (최신순, 페이지네이션)
  */
 export function findArticles(
